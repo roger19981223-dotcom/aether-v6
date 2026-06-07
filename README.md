@@ -1,125 +1,134 @@
 # SuperYellow Proxy
 
-> **基于多 TCP 流并行复用 + 自适应 FEC 前向纠错的新一代代理协议**
+> **Multi TCP Stream Parallel Multiplexing + Adaptive Forward Error Correction — Next-Gen Proxy Protocol**
 
-SuperYellow 是一个高性能、抗检测的隧道代理协议，专为恶劣网络环境设计。通过多 TCP 流并行复用、自适应前向纠错、uTLS 指纹伪装、REALITY 级 SNI 伪装等技术，实现高吞吐、低延迟、抗封锁的代理体验。
+SuperYellow is a high-performance, censorship-resistant proxy protocol designed for harsh network environments. Through multi TCP stream parallelism, adaptive FEC, uTLS fingerprint camouflage, and REALITY-level SNI disguise, it delivers high-speed, low-latency, anti-censorship proxy experience.
 
 English version: [README_EN.md](README_EN.md)
 
 ---
 
-## 核心协议优势
+## Downloads
 
-### 1. 多 TCP 流并行复用
+| Platform | File | Size |
+|----------|------|------|
+| Windows x64 | [superyellow-windows-amd64.exe](../../releases/download/v1.2.0/superyellow-windows-amd64.exe) | 13 MB |
+| Android | [SuperYellow-Proxy-v1.0.apk](../../releases/download/v1.2.0/SuperYellow-Proxy-v1.0.apk) | 20 MB |
+| iStoreOS/OpenWrt x64 | [SuperYellow_Client_v1.2.1_x86_64.run](../../releases/download/v1.2.0/SuperYellow_Client_v1.2.1_x86_64.run) | 6.5 MB |
 
-SuperYellow 在服务端与客户端之间建立 **6 条并行 TCP 流**（NumStreams = 6），每条流独立携带 FEC 分片组，**单流丢包不影响其他流**。
-
-| 特性 | SuperYellow | 传统单连接方案 |
-|------|--------|---------------|
-| 队头阻塞 | 无（独立流） | 严重 |
-| 单流丢包影响 | 仅影响一个分片组 | 阻塞整个连接 |
-| 丢包网络吞吐量 | 高 | 急剧下降 |
-
-### 2. 自适应 FEC 前向纠错
-
-SuperYellow 每 3 秒基于 RTT 和丢包率动态调整 FEC 参数：
-
-| 网络状态 | 数据分片 | 校验分片 | 冗余率 |
-|---------|---------|---------|-------|
-| 低延迟低丢包 (<2%) | 10 | 1 | 10% |
-| 正常状态 | 4 | 1 | 25% |
-| 高丢包 (>15%) | 4 | 2 | 50% |
-
-FEC 解码失败时，系统自动标记该序列为"跳过"，避免 reassembler 死锁阻塞后续数据。
-
-### 3. uTLS 指纹伪装
-
-使用 uTLS 模拟 Chrome TLS 指纹（HelloChrome_Auto），DPI 无法区分 SuperYellow 流量与正常 HTTPS 浏览。
-
-### 4. 智能 Padding（64 字节对齐）
-
-每帧填充到 64 字节边界，隐藏流量长度特征。
-
-### 5. REALITY 级 SNI 伪装
-
-Camo 模式下，服务端返回真实 www.microsoft.com:443 证书，握手阶段完全合法。
-
-### 6. VLESS 协议透传
-
-直接透传 VLESS 协议，无需额外封装，兼容 PassWall、v2rayN、Clash 等标准 VLESS 客户端。
-
-### 7. SHA-256 时间戳授权
-
-token = SHA256(SHA256(username:password) + timestamp_ms)，令牌 15 秒有效期，防重放。
-
-### 8. Mux.cool 多路复用支持
-
-原生支持 xray Mux（CMD=3），解析 mux.cool 帧协议，每个子流独立拨号目标，兼容 PassWall 重启后 MUX 自动启用的场景。
-
-### 9. Web 管理面板
-
-- **服务端面板** (http://服务器IP:8080)：系统状态、用户管理、流量统计
-- **客户端面板** (http://localhost:9999)：开关、节点切换
-
-### 10. 多用户支持
-
-支持多用户名/密码、流量配额、到期时间、实时速率统计。
+Download the client for your platform, then configure your server info in the Web panel.
 
 ---
 
-## 稳定性架构
+## Protocol Features
 
-V8 经过大量实战测试和多轮稳定性修复，具备以下可靠性保障：
+### 1. Multi TCP Stream Parallel Multiplexing
 
-### 单流静默自愈
+SuperYellow establishes **6 parallel TCP streams** (NumStreams = 6) between server and client. Each stream independently carries FEC parity shards — **a single stream failure does not affect overall transmission**.
 
-当某条物理流出现写入/读取失败时，**仅关闭该条脏流**，不触发全局重连。后台 `monitorHealth` 僵尸检测器每 3 秒巡检一次，自动重建断开的流。FEC 冗余在网络抖动期间提供保护，用户无感知。
+| Feature | SuperYellow | Traditional Proxy |
+|---------|-------------|-------------------|
+| Header overhead | None, native TCP | Yes |
+| Single stream failure impact | No impact | Full reconnect |
+| Throughput on weak networks | High | Drops sharply |
 
-```
-传统方案: 单流故障 → triggerReconnect() → 全部流断开 → 重连风暴 → 隧道死亡
-SuperYellow Proxy: 单流故障 → Close(脏流) → monitorHealth 检测 → 静默重建 → 隧道自愈
-```
+### 2. Adaptive Forward Error Correction
 
-### 僵尸会话即时清理
+SuperYellow dynamically adjusts FEC parameters every 3 seconds based on RTT and packet loss:
 
-服务端在提取会话时，如果发现会话已标记为 closed=true（僵尸），立即从内存 map 中清除并释放资源，允许新连接立即接入，避免"僵尸会话拒绝服务"死锁。
+| Network State | Data Shards | Parity Shards | Redundancy |
+|--------------|-------------|---------------|------------|
+| Low latency, low loss (<2%) | 10 | 1 | 10% |
+| Normal | 4 | 1 | 25% |
+| High loss (>15%) | 4 | 2 | 50% |
 
-### 带超时的帧队列发送
+When FEC decoding fails, the system marks the frame as "lost" and the reassembler skips it, continuing to process subsequent data.
 
-FEC reassembler 解码后的帧通过 outputCh 传递给帧分发循环。发送使用 1 秒超时（而非直接丢弃），仅在 outputCh 持续满载时才丢帧，避免突发流量导致的数据丢失。
+### 3. uTLS Fingerprint Camouflage
 
-### TCP 背压控制
+Uses uTLS to mimic Chrome TLS fingerprint (HelloChrome_Auto). DPI cannot distinguish SuperYellow from normal HTTPS traffic.
 
-- 写入超时：3 秒（快速释放锁，避免写入 goroutine 堆积）
-- 并发写入限制：`fs` 通道容量 64（限制同时竞争写入锁的 goroutine 数量）
-- 读取缓冲区上限：32768 字节（防止 uint16 溢出）
+### 4. Random Padding (64-byte aligned)
 
-### nftables 代理循环防护
+Each frame is padded to 64-byte boundary, eliminating traffic length fingerprinting.
 
-隧道服务器 IP 通过 `psw_vps` nftables 集合绕过 PassWall 透明代理，防止 SuperYellow 隧道自身的出站流量被 PassWall 拦截后通过隧道回环。
+### 5. REALITY-Level SNI Disguise
+
+In Camo mode, the server returns the real www.microsoft.com:443 certificate — the verification phase is completely legitimate.
+
+### 6. VLESS Protocol Passthrough
+
+Directly passes through VLESS protocol without additional encapsulation. Compatible with PassWall, v2rayN, Clash, and other standard VLESS clients.
+
+### 7. SHA-256 Timestamp Authorization
+
+token = SHA256(SHA256(username:password) + timestamp_ms), valid for 15 seconds, anti-replay.
+
+### 8. Mux.cool Multiplexing Support
+
+Source-level support for xray Mux (CMD=3), parsing mux.cool frame protocol. Each sub-stream independently dials the target, resolving PassWall MUX auto-detection compatibility issues.
+
+### 9. Web Management Panel
+
+- **Server panel** (http://SERVER_IP:8080): System status, user management, traffic statistics
+- **Client panel** (http://ROUTER_IP:8899 or http://localhost:9999): Configuration, node switching
+- Random client generation (user + password), one-click copy VLESS link and JSON config
+
+### 10. Multi-User Support
+
+Multiple users with quotas/passwords, traffic limits, expiry dates, real-time traffic statistics.
 
 ---
 
-## 架构图
+## Stability Architecture
+
+V8 has undergone extensive real-world testing and multiple rounds of stability fixes:
+
+### Single-Stream Silent Healing
+
+When a TCP stream write/read fails, **only that stream is closed** — no global reconnect. The background `monitorHealth` checks every 2 seconds and automatically rebuilds failed streams. FEC redundancy provides data protection during rebuild — transparent to the user.
 
 ```
-客户端侧:
-  PassWall/浏览器 -> VLESS :11080 -> SuperYellow 客户端
-       -> 6 条并行 TCP 流 (FEC 分片)
-       -> uTLS (Chrome 指纹) + TLS 1.3
-  ======= TCP (伪装为 HTTPS) =======
-服务端侧:
-  协议识别 (SNI+ALPN)
-       -> Camo 返回(微软) / SuperYellow 处理
-       -> FEC 解码 + 帧重组
-       -> 目标服务器 (TCP)
+Traditional: Stream fails → triggerReconnect() → all disconnect → network storm → rebuild
+SuperYellow: Stream fails → Close(that stream) → monitorHealth → silent rebuild → seamless
+```
+
+### Zombie Session Cleanup
+
+The server periodically cleans up sessions marked as closed=true, releasing memory and resources. New connections can immediately create new sessions, preventing "zombie session denial of service".
+
+### TCP Backpressure Control
+
+- Write timeout: 3 seconds, preventing write goroutine pile-up
+- Concurrent write limit: `fs` channel capacity of 64
+- Read buffer cap: 32768 bytes, preventing uint16 overflow
+
+### nftables Loop Prevention
+
+The server IP is added to the `psw_vps` nftables set, bypassing PassWall transparent proxy. Prevents SuperYellow's own traffic from being intercepted by PassWall, forming an infinite loop.
+
+---
+
+## Architecture
+
+```
+Client Side:
+  PassWall/Browser → VLESS :11081 → SuperYellow Client Plugin
+       → 6 parallel TCP streams (FEC shards)
+       → uTLS (Chrome fingerprint) + TLS 1.3
+  ======= TCP (disguised as HTTPS) ========
+Server Side:
+  Protocol Detection (SNI routing)
+       → Camo fallback (disguise) / SuperYellow handler
+       → FEC reassembly + frame dispatch
+       → Target server (TCP)
 ```
 
 ---
 
-## 快速部署
+## Quick Deployment
 
-### 一、安装服务端 (Ubuntu/Debian)
+### One-Click Server Install (Ubuntu/Debian)
 
 ```bash
 wget https://raw.githubusercontent.com/roger19981223-dotcom/superyellow-proxy/main/install.sh
@@ -127,19 +136,38 @@ chmod +x install.sh
 sudo ./install.sh server
 ```
 
-### 二、安装客户端 (OpenWrt/iStoreOS)
+### Install Client — iStoreOS/OpenWrt Plugin
 
 ```bash
-wget https://raw.githubusercontent.com/roger19981223-dotcom/superyellow-proxy/main/install.sh
-chmod +x install.sh
-./install.sh client
+# Upload .run package to router
+scp SuperYellow_Client_v1.2.1_x86_64.run root@192.168.100.1:/tmp/
+
+# SSH into router and install
+ssh root@192.168.100.1
+sh /tmp/SuperYellow_Client_v1.2.1_x86_64.run
+
+# Edit config
+vi /etc/config/superyellow_client.json
+/etc/init.d/superyellow restart
 ```
+
+After installation, the PassWall node is auto-registered. Web panel: `http://ROUTER_IP:8899`
+
+LuCI integration: Services → SuperYellow Proxy
+
+### Install Client — Windows
+
+Run `superyellow-windows-amd64.exe` directly. Open `http://localhost:9999` in browser to configure server.
+
+### Install Client — Android
+
+Install `SuperYellow-Proxy-v1.0.apk`. Configure server in the app.
 
 ---
 
-## 配置说明
+## Configuration
 
-### 客户端配置 (aether_client.json)
+### Client Config (superyellow_client.json)
 
 ```json
 {
@@ -156,9 +184,9 @@ chmod +x install.sh
 }
 ```
 
-> **重要：** 如果服务端设置了 domain 字段，客户端的 sni 必须与之匹配，否则连接会被 Camo 模式丢弃。
+> **Important:** If the server has a `domain` configured, the client's `sni` must match it, otherwise the connection will be intercepted by Camo mode.
 
-### 服务端配置 (aether_config.json)
+### Server Config (aether_config.json)
 
 ```json
 {
@@ -175,129 +203,100 @@ chmod +x install.sh
 }
 ```
 
-> **注意：** domain 为空时使用自签名证书；设为域名时自动申请 ACME 证书（需 80 端口空闲）。
+> **Note:** When `domain` is empty, a self-signed certificate is used. When set, ACME cert is auto-requested (port 80 must be free).
 
 ---
 
-## PassWall 集成
+## PassWall Integration
 
-### 添加 VLESS 节点
+### Add VLESS Node
 
-在 PassWall 中添加 Xray 节点：
-- 协议：VLESS
-- 地址：127.0.0.1
-- 端口：11080
-- 传输：TCP
-- 加密：none
+In PassWall, add an Xray node:
+- Protocol: VLESS
+- Address: 127.0.0.1
+- Port: 11081
+- Transport: TCP
+- Encryption: none
 
-### PassWall 配置持久化脚本
+### Bypass Rules
 
-PassWall 重启会丢失手动配置（tcp_node 回默认、Direct.ip_list 清空、nftables bypass 清空）。部署自动修复：
-
-```bash
-cat > /etc/aether-fix.sh << 'EOF'
-#!/bin/sh
-# 1. 检查 tcp_node 是否指向 SuperYellow
-CURRENT_NODE=$(uci get passwall.@global[0].tcp_node 2>/dev/null)
-if [ "$CURRENT_NODE" != "gCWK09oR" ]; then
-    uci set passwall.@global[0].tcp_node='gCWK09oR'
-    uci commit passwall
-    /etc/init.d/passwall restart
-    sleep 10
-fi
-# 2. 确保 MUX 关闭（SuperYellow 已在源码支持 MUX，但关闭可减少开销）
-uci set passwall.gCWK09oR.mux='0' 2>/dev/null
-uci commit passwall 2>/dev/null
-# 3. 恢复 nftables 绕过（PassWall 重启会清空）
-nft add element inet passwall psw_vps { YOUR_SERVER_IP } 2>/dev/null
-# 4. 确保 sniffing_override_dest 开启
-uci set passwall.@global[0].sniffing_override_dest='1' 2>/dev/null
-uci commit passwall 2>/dev/null
-# 5. 确保 Docker 容器运行
-docker restart aether-client 2>/dev/null
-EOF
-chmod +x /etc/aether-fix.sh
-echo '*/5 * * * * /etc/aether-fix.sh >/dev/null 2>&1' | crontab -
-```
-
-> **说明：** Mux.cool (CMD=3) 已在客户端源码层支持，无需依赖 PassWall 配置。此脚本仅解决 PassWall 重启后的配置丢失问题。
+SuperYellow automatically adds the server IP to the `psw_vps` nftables set, bypassing PassWall transparent proxy. If the bypass is lost after a PassWall restart, the client plugin will auto-restore it.
 
 ---
 
-## 技术细节
+## Technical Details
 
-### FEC Reassembler 工作原理
+### FEC Reassembler Working Principle
 
-SuperYellow 使用 Reed-Solomon 纠删码对数据帧进行分片编码。每组包含 N 个数据分片和 M 个校验分片。接收端在收到足够分片后重组原始数据。
+SuperYellow uses Reed-Solomon erasure coding for frame shard encoding. Each group has N data shards + M parity shards. The receiver can reconstruct original data once enough shards are received.
 
-**死锁防护：** 当某组 FEC 解码失败（分片不足或损坏），该序列号被标记为 nil 占位符写入 readyBuffer，drainReady 循环遇到 nil 时跳过并记录日志，继续处理后续已解码的数据。这确保了一个 FEC 组的失败不会阻塞整个数据流。
+**Fault tolerance:** When FEC decoding fails (insufficient shards or corruption), the system marks the sequence number as a nil sentinel in readyBuffer. The drainReady loop logs and skips nil entries, continuing to process subsequent decoded data. A single FEC failure will not block the entire data stream.
 
 ```
 readyBuffer: [seq=100: data] [seq=101: nil(skip)] [seq=102: data] [seq=103: data]
-                                                     ↑ drainReady 从这里继续输出
+                                                    ↑ drainReady continues advancing
 ```
 
-### 帧协议格式
+### Frame Protocol Format
 
-每帧以魔数 `0x41455448` ("AETH") 开头，包含 21 字节帧头：
+Each frame starts with magic number `0x41455448` ("AETH"), 21-byte frame header.
 
 ```
-[魔数:4B][类型:1B][保留:2B][ConnID:4B][长度:4B][时间戳:8B][token:16B][数据:NB][padding]
+[Magic:4B][Type:1B][Length:2B][ConnID:4B][Size:4B][Timestamp:8B][Token:16B][Data:NB][Padding]
 ```
 
-帧类型：
-- 0x01: CONNECT（客户端→服务端，建立连接）
-- 0x02: DATA（双向，传输数据）
-- 0x03: CLOSE（双向，关闭连接）
-- 0x05: UDP（客户端→服务端，UDP 代理）
+Frame types (client→server):
+- 0x01: CONNECT (establish connection)
+- 0x02: DATA (bidirectional, transfer data)
+- 0x03: CLOSE (bidirectional, close connection)
+- 0x05: UDP (UDP proxy)
 
-服务端→客户端类型：
-- 0x01: CONNECT_ACK（连接建立成功）
-- 0x02: CONNECT_NAK（连接建立失败）
+Server→client:
+- 0x01: CONNECT_ACK (connection established)
+- 0x02: CONNECT_NAK (connection failed)
 - 0x03: CLOSE
 - 0x04: DATA
 
-### VLESS 协议处理
+### VLESS Protocol Handling
 
-客户端读取 VLESS 请求头后分析协议字节，正确映射 SOCKS5 ATYP：
-- ATYP 0x01: IPv4（4 字节）
-- ATYP 0x02/0x03: 域名（1 字节长度 + 域名）
-- ATYP 0x04: IPv6（16 字节）
+The client reads VLESS request header protocol bytes and correctly maps SOCKS5 ATYP:
+- ATYP 0x01: IPv4 (4 bytes)
+- ATYP 0x02/0x03: Domain (1 byte length + domain)
+- ATYP 0x04: IPv6 (16 bytes)
 
-VLESS 响应格式：`[版本:1B][AddonLen:2B BE]`（3 字节），发送后才启动写入 goroutine，避免 xray 协议握手被破坏。
+VLESS response format: `[Version:1B][AddonLen:2B BE]` (3 bytes). Response is sent before the write goroutine starts, avoiding corruption of the xray protocol state machine.
 
-### ProtocolDemux 路由
+### ProtocolDemux Routing
 
-当服务端配置了 `domain` 字段时，所有入站 TLS 连接按以下规则路由：
-1. SNI 匹配 domain → SuperYellow TLS 处理器
-2. ALPN 为 `aether/1` → SuperYellow TLS 处理器
-3. 其他 → Camo 处理器（代理到 www.microsoft.com:443）
+The server routes inbound TLS connections based on the `domain` field:
+1. SNI matches domain → SuperYellow TLS handler
+2. SNI doesn't match → Camo fallback (returns nginx welcome page)
 
-因此客户端必须配置正确的 `sni` 字段（与服务端 domain 一致），否则会被 Camo 模式丢弃。
-
----
-
-## 协议参数
-
-| 参数 | 值 |
-|------|---|
-| 并行流数 | 6 |
-| TLS 版本 | TLS 1.3 only |
-| ALPN | aether/1 |
-| 帧头魔数 | 0x41455448 ("AETH") |
-| FEC 库 | github.com/klauspost/reedsolomon |
-| TLS 指纹 | uTLS Chrome_Auto |
-| 授权算法 | SHA-256(SHA-256(user:pass) + timestamp_ms) |
-| Token 有效期 | 15 秒 |
-| 目标拨号超时 | 30 秒 |
-| 客户端 ACK 等待 | 35 秒 |
-| 写入超时 | 3 秒 |
-| 并发写入限制 | 64 (fs 通道容量) |
-| 读取缓冲区上限 | 32768 字节 |
-| 帧队列发送超时 | 1 秒 |
+After TLS handshake, the Magic number is checked: Magic present → Aether protocol handler; Magic absent → returns camouflage page.
 
 ---
 
-## 许可证
+## Protocol Parameters
+
+| Parameter | Value |
+|-----------|-------|
+| Parallel streams | 6 |
+| TLS version | TLS 1.3 only |
+| ALPN | h2, http/1.1 |
+| Frame magic | 0x41455448 ("AETH") |
+| FEC library | github.com/klauspost/reedsolomon |
+| TLS fingerprint | uTLS Chrome_Auto |
+| Auth algorithm | SHA-256(SHA-256(user:pass) + timestamp_ms) |
+| Token validity | 15 seconds |
+| Target dial timeout | 30 seconds |
+| Client ACK wait | 35 seconds |
+| Write timeout | 3 seconds |
+| Max concurrent writes | 64 (fs channel capacity) |
+| Read buffer cap | 32768 bytes |
+| Frame dispatch send timeout | 1 second |
+
+---
+
+## License
 
 MIT License
